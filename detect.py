@@ -6,11 +6,14 @@ import sys
 from typing import List
 from collections import namedtuple
 
+import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 import numpy as np
 from scipy.signal import welch, lfilter, butter, freqz
 from scipy.signal import find_peaks_cwt, find_peaks
 from matplotlib.animation import FuncAnimation
+from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
 import sounddevice as sd
 
 """Some useful note frequencies."""
@@ -21,7 +24,7 @@ C4 = A4*(2**(-9.0/12.0)) # 9 semitones from C4 to A4, so lower 9 semitones to ge
 n_octaves = 4
 
 """Range of frequencies to observe."""
-f_s = 110.0*(2**(-9.0/12.0))
+f_s = 220.0*(2**(-9.0/12.0))
 f_e = f_s*(2**n_octaves)
 
 
@@ -66,6 +69,18 @@ class Note(object):
     def __repr__(self) -> str:
         """Python representation of this object."""
         return str(self)
+    def in_Gclef(self) -> float:
+        """Height in the G clef."""
+        n = self.semitone - 7
+        if n <= -3: # E
+            n -= 1 # pretend there is an "E#" to make the math work
+        sharp = ((n % 2) == 1)
+        n /= 2.0
+        n = int(n) # ignore sharps by rounding it
+        n /= 2.0
+        # we are in the 4th octave by default, so if that is not true, shift the note
+        n += (self.octave - 4)*3.5
+        return n, sharp
 
 def single_note(f: float) -> Note:
     """
@@ -137,17 +152,19 @@ def fetch_audio(fs:float,
         A = 0.1
         time = N/fs
         x = np.linspace(0, time, N)
-        y = A*np.sin(2*np.pi*440.0*x) + A*0.5*np.sin(2*np.pi*880.0*x)
+        y = A*np.sin(2*np.pi*A4*x)
         y = sd.playrec(y, samplerate=fs, channels=2)
     else:
         y = sd.rec(N, samplerate=fs, channels=2)
     sd.wait()
     return y
 
-def live_plotter(i: int, play_tone: bool, min_snr: float):
+def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr: float):
     """
         Collect audio and plot its Fourier transform.
         :param int i: Frame number used in the plotting.
+        :param plt.Figure fig: Figure.
+        :param np.ndarray ax: Axes
         :param bool play_tone: Whether to record and play simultaneously to test it.
         :param float min_snr: Minimum signal-to-noise ratio used to filter out noise.
     """
@@ -198,13 +215,15 @@ def live_plotter(i: int, play_tone: bool, min_snr: float):
     thr_bkg = med_bkg + min_snr*std_bkg
 
     plt.cla()
-    ax = plt.gca()
-    ax.plot(F, Y, '-b', alpha=0.8, label='Fourier transform')
-    plt.axhline(y=med_bkg, linestyle='--', lw=2, label='Median', color='green')
-    plt.axhline(y=qup_bkg, linestyle='--', lw=2, label='97.5% quantile', color='cyan')
-    plt.axhline(y=qdw_bkg, linestyle='--', lw=2, label='2.5% quantile', color='magenta')
-    #plt.axhline(y=thr_bkg, linestyle='--', lw=2, label='Threshold', color='red')
-    ax.set(xlabel='Frequency [Hz]',
+    ax[1].clear()
+    ax[0].clear()
+    ax[1].plot(F, Y, '-b', alpha=0.8, label='Fourier transform')
+    ax[1].axhline(y=med_bkg, linestyle='--', lw=2, label='Median', color='green')
+    ax[1].axhline(y=qup_bkg, linestyle='--', lw=2, label='97.5% quantile', color='cyan')
+    ax[1].axhline(y=qdw_bkg, linestyle='--', lw=2, label='2.5% quantile', color='magenta')
+    #ax[1].axhline(y=thr_bkg, linestyle='--', lw=2, label='Threshold', color='red')
+    ax[1].legend(frameon=False)
+    ax[1].set(xlabel='Frequency [Hz]',
            ylabel='Relative power [dB]',
            title='',
            ylim=(-140.0, 0.0),
@@ -212,14 +231,44 @@ def live_plotter(i: int, play_tone: bool, min_snr: float):
     idx, properties = find_peaks(Y, height=thr_bkg)
     #idx = find_peaks_cwt(Y, np.arange(1, 10), min_snr=min_snr)
     if len(idx) > 0:
-        ax.scatter(F[idx], Y[idx], s=40, marker='o')
+        ax[1].scatter(F[idx], Y[idx], s=40, marker='o')
         peaks_freq = F[idx]
         notes = convert_to_note(peaks_freq)
         only_fundamental = remove_harmonics(notes)
         print(f"Notes found: {only_fundamental}")
-        print(f"   -> Peaks: {peaks_freq}")
-        print(f"   -> All modes found: {notes}")
-    plt.legend(frameon=False)
+        #print(f"   -> Peaks: {peaks_freq}")
+        #print(f"   -> All modes found: {notes}")
+
+        # visualize it
+        clef = mpimg.imread('Gclef.png')
+        imagebox = OffsetImage(clef, zoom=0.20)
+        ab = AnnotationBbox(imagebox, (-1.0, 1.0), frameon=False)
+        ax[0].add_artist(ab)
+
+        ax[0].axhline(y=0, linestyle='-', lw=1, color='black')
+        ax[0].axhline(y=1, linestyle='-', lw=1, color='black')
+        ax[0].axhline(y=2, linestyle='-', lw=1, color='black')
+        ax[0].axhline(y=3, linestyle='-', lw=1, color='black')
+        ax[0].axhline(y=-1, linestyle='-', lw=1, color='black')
+        notes_in_Gclef = np.array([note.in_Gclef()[0] for note in only_fundamental])
+        sharps_in_Gclef = np.array([note.in_Gclef()[1] for note in only_fundamental])
+        for note in notes_in_Gclef:
+            if note < -1:
+                for yv in range(int(note)-1, -1):
+                    ax[0].hlines(y=yv, xmin=-0.5, xmax=0.5, linestyle='-', lw=1, color='black')
+            if note > 3:
+                for yv in range(4, int(note)+2):
+                    ax[0].hlines(y=yv, xmin=-0.5, xmax=0.5, linestyle='-', lw=1, color='black')
+
+        ax[0].scatter(np.zeros_like(notes_in_Gclef), notes_in_Gclef, s=150, marker=matplotlib.markers.MarkerStyle(marker='o', fillstyle='none'), color='black')
+        correction = 0.25
+        for note in only_fundamental:
+            height, s = note.in_Gclef()
+            if not s:
+                continue
+            ax[0].annotate("#", xy=(-0.5, height-correction), size=24)
+        ax[0].set(xlabel='', ylabel='', title='', ylim=(-3, 6), xlim=(-2, 2))
+        ax[0].axis('off')
 
 def show_filter_response():
     """Make a plot of the filter response."""
@@ -250,7 +299,7 @@ def main():
                         type=float,
                         metavar='FLOAT',
                         action='store',
-                        default=3.0,
+                        default=5.0,
                         help='Minimum signal-to-noise ratio used to filter ambient noise.')
 
     args = parser.parse_args()
@@ -262,8 +311,10 @@ def main():
 
     #plt.style.use('fivethirtyeight')
 
-    fig = plt.figure(figsize=(10, 8))
-    ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(args.play_tone, args.min_snr))
+    fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
+    ax = np.reshape(ax, (-1,))
+
+    ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(fig, ax, args.play_tone, args.min_snr))
 
     #plt.tight_layout()
     plt.show()
