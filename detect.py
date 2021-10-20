@@ -162,7 +162,7 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
         :param music21.stream.Stream stream: Notes stream.
         :param str sheet_filename: Where to save the output music sheet.
     """
-    time = 1.0
+    time = 0.5
     fs = 44.1e3
     Ts = 1.0 / fs
     N = int(time / Ts)
@@ -208,9 +208,8 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
     std_bkg = 0.25*(qup_bkg - qdw_bkg)
     thr_bkg = med_bkg + min_snr*std_bkg
 
-    plt.cla()
+    #plt.cla()
     ax[1].clear()
-    ax[0].clear()
     ax[1].plot(F, Y, '-b', alpha=0.8, label='Fourier transform')
     ax[1].axhline(y=med_bkg, linestyle='--', lw=2, label='Median', color='green')
     ax[1].axhline(y=qup_bkg, linestyle='--', lw=2, label='97.5% quantile', color='cyan')
@@ -246,6 +245,7 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
             stream[0][-1].append(music21.chord.Chord([note.name() for note in only_fundamental]))
         stream.write("musicxml.png", fp=sheet_filename)
         sname = sheet_filename.replace(".png", "-1.png")
+        ax[0].clear()
         ax[0].imshow(plt.imread(f"{sname}"))
         ax[0].axis("off")
         #stream.show("text")
@@ -313,7 +313,7 @@ def main():
     stream.append(music21.stream.Part())
     stream[0].append(music21.stream.Measure())
 
-    ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(fig, ax, args.play_tone, args.min_snr, stream, args.sheet_filename))
+    ani = FuncAnimation(fig, live_plotter, interval=0, fargs=(fig, ax, args.play_tone, args.min_snr, stream, args.sheet_filename))
 
     #plt.tight_layout()
     plt.show()
