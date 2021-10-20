@@ -16,6 +16,8 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
 import sounddevice as sd
 
+import music21
+
 """Some useful note frequencies."""
 A4 = 440.00
 C4 = A4*(2**(-9.0/12.0)) # 9 semitones from C4 to A4, so lower 9 semitones to get C4
@@ -34,16 +36,16 @@ class Note(object):
     """Note names."""
     names = {
             0: "C",
-            1: "C#/Db",
+            1: "C#",
             2: "D",
-            3: "D#/Eb",
+            3: "D#",
             4: "E",
             5: "F",
-            6: "F#/Gb",
+            6: "F#",
             7: "G",
-            8: "G#/Ab",
+            8: "G#",
             9: "A",
-            10: "A#/Bb",
+            10: "A#",
             11: "B"
             }
 
@@ -69,18 +71,6 @@ class Note(object):
     def __repr__(self) -> str:
         """Python representation of this object."""
         return str(self)
-    def in_Gclef(self) -> float:
-        """Height in the G clef."""
-        n = self.semitone - 7
-        if n <= -3: # E
-            n -= 1 # pretend there is an "E#" to make the math work
-        sharp = ((n % 2) == 1)
-        n /= 2.0
-        n = int(n) # ignore sharps by rounding it
-        n /= 2.0
-        # we are in the 4th octave by default, so if that is not true, shift the note
-        n += (self.octave - 4)*3.5
-        return n, sharp
 
 def single_note(f: float) -> Note:
     """
@@ -159,7 +149,7 @@ def fetch_audio(fs:float,
     sd.wait()
     return y
 
-def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr: float):
+def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
     """
         Collect audio and plot its Fourier transform.
         :param int i: Frame number used in the plotting.
@@ -167,6 +157,8 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
         :param np.ndarray ax: Axes
         :param bool play_tone: Whether to record and play simultaneously to test it.
         :param float min_snr: Minimum signal-to-noise ratio used to filter out noise.
+        :param music21.stream.Stream stream: Notes stream.
+        :param str sheet_filename: Where to save the output music sheet.
     """
     time = 1.0
     fs = 44.1e3
@@ -240,35 +232,17 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
         #print(f"   -> All modes found: {notes}")
 
         # visualize it
-        clef = mpimg.imread('Gclef.png')
-        imagebox = OffsetImage(clef, zoom=0.20)
-        ab = AnnotationBbox(imagebox, (-1.0, 1.0), frameon=False)
-        ax[0].add_artist(ab)
-
-        ax[0].axhline(y=0, linestyle='-', lw=1, color='black')
-        ax[0].axhline(y=1, linestyle='-', lw=1, color='black')
-        ax[0].axhline(y=2, linestyle='-', lw=1, color='black')
-        ax[0].axhline(y=3, linestyle='-', lw=1, color='black')
-        ax[0].axhline(y=-1, linestyle='-', lw=1, color='black')
-        notes_in_Gclef = np.array([note.in_Gclef()[0] for note in only_fundamental])
-        sharps_in_Gclef = np.array([note.in_Gclef()[1] for note in only_fundamental])
-        for note in notes_in_Gclef:
-            if note < -1:
-                for yv in range(int(note)-1, -1):
-                    ax[0].hlines(y=yv, xmin=-0.5, xmax=0.5, linestyle='-', lw=1, color='black')
-            if note > 3:
-                for yv in range(4, int(note)+2):
-                    ax[0].hlines(y=yv, xmin=-0.5, xmax=0.5, linestyle='-', lw=1, color='black')
-
-        ax[0].scatter(np.zeros_like(notes_in_Gclef), notes_in_Gclef, s=150, marker=matplotlib.markers.MarkerStyle(marker='o', fillstyle='none'), color='black')
-        correction = 0.25
-        for note in only_fundamental:
-            height, s = note.in_Gclef()
-            if not s:
-                continue
-            ax[0].annotate("#", xy=(-0.5, height-correction), size=24)
-        ax[0].set(xlabel='', ylabel='', title='', ylim=(-3, 6), xlim=(-2, 2))
-        ax[0].axis('off')
+        current_measure = stream[-1]
+        if len(current_measure) == 4:
+            stream.append(music21.stream.Measure())
+            current_measure = stream[-1]
+        if len(only_fundamental) == 1:
+            current_measure.append(music21.note.Note(only_fundamental[0].name()))
+        else:
+            current_measure.append(music21.chord.Chord([note.name() for note in only_fundamental]))
+        stream.write("lily.png", fp=sheet_filename)
+        ax[0].imshow(plt.imread(f"{sheet_filename}.png"))
+        ax[0].axes("off")
 
 def show_filter_response():
     """Make a plot of the filter response."""
@@ -301,6 +275,12 @@ def main():
                         action='store',
                         default=5.0,
                         help='Minimum signal-to-noise ratio used to filter ambient noise.')
+    parser.add_argument('--sheet-filename',
+                        type=str,
+                        metavar='FILENAME',
+                        action='store',
+                        default="sheet",
+                        help="Sheet filename where to save the tones discovered.")
 
     args = parser.parse_args()
     print(f"Minimum signal-to-noise ratio: {args.min_snr:.2f}")
@@ -313,8 +293,13 @@ def main():
 
     fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
     ax = np.reshape(ax, (-1,))
+    us = music21.environment.UserSettings()
+    #us["musicxmlPath"] = "/usr/bin/mscore"
+    #us["musescoreDirectPNGPath"] = "/usr/bin/mscore"
+    stream = music21.stream.Score()
+    stream.append(music21.stream.Measure())
 
-    ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(fig, ax, args.play_tone, args.min_snr))
+    ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(fig, ax, args.play_tone, args.min_snr, stream, args.sheet_filename))
 
     #plt.tight_layout()
     plt.show()
