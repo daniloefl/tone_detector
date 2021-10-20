@@ -1,8 +1,8 @@
 # tone_detector
 
-Please install `lilypond` to use this tool:
+Please install `musescore` to use this tool:
 ```
-sudo apt install lilypond
+sudo apt install musescore
 ```
 
 ```

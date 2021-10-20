@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import os
 import sys
 
-from typing import List
+from typing import List, Tuple
 from collections import namedtuple
 
 import matplotlib
@@ -105,27 +106,28 @@ def single_note(f: float) -> Note:
 
     return Note(octave=octave, semitone=closest_semitone, off_by=off_by)
 
-def convert_to_note(freqs: np.ndarray) -> List[Note]:
+def convert_to_note(freqs: np.ndarray, amps:np.ndarray) -> List[Note]:
     """
         Convert an array of float frequencies to a list of note names.
         :param np.ndarray freqs: Frequencies in Hz.
-        return List[Note]: List of notes.
+        :param np.ndarray amps: Amplitude in dB.
+        return List[Tuple[Note, float]]: List of notes.
     """
-    return [single_note(f) for f in freqs]
+    return [(single_note(f), a) for f, a in zip(freqs, amps)]
 
-def remove_harmonics(notes: List[Note]) -> List[Note]:
+def remove_harmonics(notes: List[Tuple[Note, float]]) -> List[Note]:
     """
         Keep all notes that are the same in the input, but correspond to different octaves.
-        :param List[Note] notes: Input note list.
-        return List[Note]: List keeping only lowest octave.
+        :param List[Tuple[Note, float]] notes: Input note list.
+        return List[Note]: List keeping only the strongest octave.
     """
     my_notes = list()
     for semitone in range(12):
-        if any([note.semitone == semitone for note in notes]):
-            this_note = [note for note in notes if note.semitone == semitone]
-            octaves = [note.octave for note in this_note]
-            lowest_octave = np.argmin(np.array(octaves))
-            my_notes.append(this_note[lowest_octave])
+        if any([note.semitone == semitone for note, amp in notes]):
+            this_note = [(note, amp) for note, amp in notes if note.semitone == semitone]
+            this_amp = [amp for note, amp in this_note]
+            strongest = np.argmin(np.array(this_amp))
+            my_notes.append(this_note[strongest][0])
     return my_notes
 
 def fetch_audio(fs:float,
@@ -225,24 +227,28 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
     if len(idx) > 0:
         ax[1].scatter(F[idx], Y[idx], s=40, marker='o')
         peaks_freq = F[idx]
-        notes = convert_to_note(peaks_freq)
-        only_fundamental = remove_harmonics(notes)
+        peaks_amp = Y[idx]
+        notes_and_amp = convert_to_note(peaks_freq, peaks_amp)
+        only_fundamental = remove_harmonics(notes_and_amp)
         print(f"Notes found: {only_fundamental}")
         #print(f"   -> Peaks: {peaks_freq}")
-        #print(f"   -> All modes found: {notes}")
+        #print(f"   -> All modes found: {[note for note, amp in notes_and_amp]}")
 
         # visualize it
-        current_measure = stream[-1]
-        if len(current_measure) == 4:
-            stream.append(music21.stream.Measure())
-            current_measure = stream[-1]
+        if len([n for n in stream[0][-1] if not isinstance(n, music21.layout.SystemLayout)]) == 4:
+            stream[0].append(music21.stream.Measure())
+            if len(stream[0]) % 4 == 0:
+                stream[0][-1].append(music21.layout.SystemLayout(isNew=True))
+        current_measure = stream[0][-1]
         if len(only_fundamental) == 1:
-            current_measure.append(music21.note.Note(only_fundamental[0].name()))
+            stream[0][-1].append(music21.note.Note(only_fundamental[0].name()))
         else:
-            current_measure.append(music21.chord.Chord([note.name() for note in only_fundamental]))
-        stream.write("lily.png", fp=sheet_filename)
-        ax[0].imshow(plt.imread(f"{sheet_filename}.png"))
-        ax[0].axes("off")
+            stream[0][-1].append(music21.chord.Chord([note.name() for note in only_fundamental]))
+        stream.write("musicxml.png", fp=sheet_filename)
+        sname = sheet_filename.replace(".png", "-1.png")
+        ax[0].imshow(plt.imread(f"{sname}"))
+        ax[0].axis("off")
+        #stream.show("text")
 
 def show_filter_response():
     """Make a plot of the filter response."""
@@ -279,8 +285,14 @@ def main():
                         type=str,
                         metavar='FILENAME',
                         action='store',
-                        default="sheet",
+                        default="sheet.png",
                         help="Sheet filename where to save the tones discovered.")
+    parser.add_argument('--mscore-path',
+                        type=str,
+                        metavar='FILENAME',
+                        action='store',
+                        default="/usr/bin/mscore",
+                        help="Path of the lilypond executable to generate sheet music.")
 
     args = parser.parse_args()
     print(f"Minimum signal-to-noise ratio: {args.min_snr:.2f}")
@@ -294,10 +306,12 @@ def main():
     fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
     ax = np.reshape(ax, (-1,))
     us = music21.environment.UserSettings()
-    #us["musicxmlPath"] = "/usr/bin/mscore"
-    #us["musescoreDirectPNGPath"] = "/usr/bin/mscore"
+    us["musicxmlPath"] = args.mscore_path
+    us["musescoreDirectPNGPath"] = args.mscore_path
+    #us["lilypondPath"] = args.lilypond_path
     stream = music21.stream.Score()
-    stream.append(music21.stream.Measure())
+    stream.append(music21.stream.Part())
+    stream[0].append(music21.stream.Measure())
 
     ani = FuncAnimation(fig, live_plotter, interval=100, fargs=(fig, ax, args.play_tone, args.min_snr, stream, args.sheet_filename))
 
