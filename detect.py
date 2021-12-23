@@ -10,6 +10,7 @@ from collections import namedtuple
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.signal import welch, lfilter, butter, freqz
 from scipy.signal import find_peaks_cwt, find_peaks
@@ -151,12 +152,12 @@ def fetch_audio(fs:float,
     sd.wait()
     return y
 
-def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
+def live_plotter(i: int, fig: plt.Figure, ax: List[plt.Axes], play_tone: bool, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
     """
         Collect audio and plot its Fourier transform.
         :param int i: Frame number used in the plotting.
         :param plt.Figure fig: Figure.
-        :param np.ndarray ax: Axes
+        :param List[plt.Axes] ax: Axes
         :param bool play_tone: Whether to record and play simultaneously to test it.
         :param float min_snr: Minimum signal-to-noise ratio used to filter out noise.
         :param music21.stream.Stream stream: Notes stream.
@@ -207,6 +208,14 @@ def live_plotter(i: int, fig: plt.Figure, ax: plt.Axes, play_tone: bool, min_snr
     qdw_bkg = np.quantile(Y, 0.025)
     std_bkg = 0.25*(qup_bkg - qdw_bkg)
     thr_bkg = med_bkg + min_snr*std_bkg
+
+    # time series
+    ax[2].clear()
+    ax[2].plot(x, y, '-b', alpha=0.8, label='Time series')
+    ax[2].set(xlabel='Time [s]',
+           ylabel='Amplitude [a.u.]',
+           title='',
+           xlim=(0.0, N*Ts))
 
     #plt.cla()
     ax[1].clear()
@@ -303,8 +312,13 @@ def main():
 
     #plt.style.use('fivethirtyeight')
 
-    fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
-    ax = np.reshape(ax, (-1,))
+    fig = plt.figure(figsize=(10, 8), tight_layout=True)
+    gs = gridspec.GridSpec(2,2)
+    ax = [fig.add_subplot(gs[:, 0]),
+          fig.add_subplot(gs[0,1]),
+          fig.add_subplot(gs[1, 1])]
+    #fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(10, 8), squeeze=False)
+    #ax = np.reshape(ax, (-1,))
     us = music21.environment.UserSettings()
     us["musicxmlPath"] = args.mscore_path
     us["musescoreDirectPNGPath"] = args.mscore_path
@@ -313,7 +327,15 @@ def main():
     stream.append(music21.stream.Part())
     stream[0].append(music21.stream.Measure())
 
-    ani = FuncAnimation(fig, live_plotter, interval=0, fargs=(fig, ax, args.play_tone, args.min_snr, stream, args.sheet_filename))
+    ani = FuncAnimation(fig,
+                        live_plotter,
+                        interval=0,
+                        fargs=(fig, ax,
+                               args.play_tone,
+                               args.min_snr,
+                               stream,
+                               args.sheet_filename)
+                        )
 
     #plt.tight_layout()
     plt.show()
