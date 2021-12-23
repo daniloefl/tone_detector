@@ -201,14 +201,6 @@ class FetchAudioThread(threading.Thread):
         x = np.linspace(0.0, N*Ts, N)
         return x, y
 
-def fetch_audio(fs:float,
-                N: int,
-                play_tone: bool) -> np.ndarray:
-    """
-        Read the audio and convert it to a Numpy array.
-        return np.ndarray: Time series of the sound taken.
-    """
-
 def live_plotter(i: int, fig: plt.Figure, ax: List[plt.Axes], audio_thread: FetchAudioThread, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
     """
         Collect audio and plot its Fourier transform.
