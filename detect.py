@@ -6,6 +6,7 @@ import sys
 
 from typing import List, Tuple
 from collections import namedtuple
+import copy
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -17,6 +18,8 @@ from scipy.signal import find_peaks_cwt, find_peaks
 from matplotlib.animation import FuncAnimation
 from matplotlib.offsetbox import TextArea, DrawingArea, OffsetImage, AnnotationBbox
 import sounddevice as sd
+
+import threading
 
 import music21
 
@@ -131,46 +134,97 @@ def remove_harmonics(notes: List[Tuple[Note, float]]) -> List[Note]:
             my_notes.append(this_note[strongest][0])
     return my_notes
 
+class FetchAudioThread(threading.Thread):
+    """
+        Thread which fetches the audio signal.
+    """
+    def __init__(self,
+                 threadId: int,
+                 fs: float,
+                 N: int,
+                 play_tone: bool):
+        """
+        Constructor.
+        :param int threadId: ID to identify the thread.
+        :param float fs: Sampling frequency in Hz.
+        :param int N: Number of samples to take.
+        :param bool play_tone: Whether to also play a 440 Hz tone for testing.
+        """
+        threading.Thread.__init__(self)
+        self.threadId = threadId
+        self.fs = fs
+        self.N = N
+        self.play_tone = play_tone
+        self.audioLock = threading.Lock()
+        self.data = np.zeros((N, 2), dtype=np.float32)
+
+    def run(self):
+        """Get signal."""
+        def callback(y, frames, time, status):
+            self.audioLock.acquire()
+            self.data = y
+            self.audioLock.release()
+        if self.play_tone:
+            while True:
+                A = 0.1
+                time = self.N/self.fs
+                x = np.linspace(0, time, self.N)
+                y = A*np.sin(2*np.pi*A4*x)
+                y = sd.playrec(y, samplerate=self.fs, channels=2)
+                sd.wait()
+                self.audioLock.acquire()
+                self.data = y
+                self.audioLock.release()
+        else:
+            while True:
+                y = sd.rec(self.N, samplerate=self.fs, channels=2)
+                sd.wait()
+                self.audioLock.acquire()
+                self.data = y
+                self.audioLock.release()
+            #with sd.InputStream(device=sd.default.device['input'],
+            #                    channels=2,
+            #                    callback=callback,
+            #                    blocksize=int(self.fs * 50.0 / 1000.0),
+            #                    samplerate=self.fs):
+            #    while True:
+            #        continue
+
+    def fetch_audio(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Wait for lock and fetch signal."""
+        self.audioLock.acquire()
+        y = copy.deepcopy(self.data)
+        self.audioLock.release()
+        N = len(y)
+        time = N/self.fs
+        Ts = 1.0 / self.fs
+        x = np.linspace(0.0, N*Ts, N)
+        return x, y
+
 def fetch_audio(fs:float,
                 N: int,
                 play_tone: bool) -> np.ndarray:
     """
         Read the audio and convert it to a Numpy array.
-        :param float fs: Sampling frequency in Hz.
-        :param int N: Number of samples to take.
-        :param bool play_tone: Whether to also play a 440 Hz tone for testing.
         return np.ndarray: Time series of the sound taken.
     """
-    if play_tone:
-        A = 0.1
-        time = N/fs
-        x = np.linspace(0, time, N)
-        y = A*np.sin(2*np.pi*A4*x)
-        y = sd.playrec(y, samplerate=fs, channels=2)
-    else:
-        y = sd.rec(N, samplerate=fs, channels=2)
-    sd.wait()
-    return y
 
-def live_plotter(i: int, fig: plt.Figure, ax: List[plt.Axes], play_tone: bool, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
+def live_plotter(i: int, fig: plt.Figure, ax: List[plt.Axes], audio_thread: FetchAudioThread, min_snr: float, stream: music21.stream.Stream, sheet_filename: str):
     """
         Collect audio and plot its Fourier transform.
         :param int i: Frame number used in the plotting.
         :param plt.Figure fig: Figure.
         :param List[plt.Axes] ax: Axes
-        :param bool play_tone: Whether to record and play simultaneously to test it.
+        :param FetchAudioThread audio_thread: Thread used to get sound.
         :param float min_snr: Minimum signal-to-noise ratio used to filter out noise.
         :param music21.stream.Stream stream: Notes stream.
         :param str sheet_filename: Where to save the output music sheet.
     """
-    time = 0.5
-    fs = 44.1e3
-    Ts = 1.0 / fs
-    N = int(time / Ts)
-
-    x = np.linspace(0.0, N*Ts, N)
-    y = fetch_audio(fs, N, play_tone=play_tone)
+    x, y = audio_thread.fetch_audio()
+    fs = audio_thread.fs
+    Ts = 1.0/fs
     y = np.mean(y, axis=-1)
+    N = len(y)
 
     b, a = butter(4, (f_s, f_e), btype='bandpass', output='ba', analog=False, fs=fs)
     y = lfilter(b, a, y)
@@ -228,7 +282,7 @@ def live_plotter(i: int, fig: plt.Figure, ax: List[plt.Axes], play_tone: bool, m
     ax[1].set(xlabel='Frequency [Hz]',
            ylabel='Relative power [dB]',
            title='',
-           ylim=(-140.0, 0.0),
+           ylim=(-100.0, 0.0),
            xlim=(f_s, f_e))
     idx, properties = find_peaks(Y, height=thr_bkg)
     #idx = find_peaks_cwt(Y, np.arange(1, 10), min_snr=min_snr)
@@ -310,6 +364,11 @@ def main():
         show_filter_response()
         sys.exit(0)
 
+    fs = 44.1e3
+    N = int(0.5*fs)
+    audio_thread = FetchAudioThread(1, fs=fs, N=N, play_tone=args.play_tone)
+    audio_thread.start()
+
     #plt.style.use('fivethirtyeight')
 
     fig = plt.figure(figsize=(10, 8), tight_layout=True)
@@ -331,7 +390,7 @@ def main():
                         live_plotter,
                         interval=0,
                         fargs=(fig, ax,
-                               args.play_tone,
+                               audio_thread,
                                args.min_snr,
                                stream,
                                args.sheet_filename)
@@ -339,6 +398,9 @@ def main():
 
     #plt.tight_layout()
     plt.show()
+
+    # wait for the other thread
+    audio_thread.join()
 
 if __name__ == '__main__':
 
